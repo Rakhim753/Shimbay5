@@ -1,59 +1,130 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils import executor
 import logging
-import os
+import asyncio
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters.command import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
 
-API_TOKEN = os.getenv("7705891566:AAETdc4uIOJJXDeGPw9jKOiTy-A7SSjkasQ")
+API_TOKEN = "7705891566:AAETdc4uIOJJXDeGPw9jKOiTy-A7SSjkasQ"
+ADMIN_ID = 7398183328
 
 logging.basicConfig(level=logging.INFO)
-
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
-# Кнопкалар
-menu = ReplyKeyboardMarkup(resize_keyboard=True)
-menu.add(
-    KeyboardButton("🚕 НОКИС ШЫМБАЙ"),
-    KeyboardButton("🚕 ШЫМБАЙ НОКИС")
-)
+# 🧠 Стейт машиналары
+class OrderStates(StatesGroup):
+    waiting_for_location = State()
+    waiting_for_contact = State()
 
-# /start командасы
-@dp.message_handler(commands=['start'])
-async def start_handler(message: types.Message):
-    await message.answer(
-        "Қош келдіңіз! Бағытыңызды таңдаңыз:",
-        reply_markup=menu
+# 📊 Пайдаланушылар базасы (жәй сақтаймыз)
+users_set = set()
+
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message, state: FSMContext):
+    users_set.add(message.from_user.id)
+
+    # 🔔 Жаңа қолданушы админге хабарланады
+    if message.from_user.id != ADMIN_ID:
+        await bot.send_message(
+            ADMIN_ID,
+            f"👤 ЖАҢА ПАЙДАЛАНЫУЩЫ:\n"
+            f"🆔 {message.from_user.id}\n"
+            f"👤 Аты: {message.from_user.full_name}\n"
+            f"🔗 Username: @{message.from_user.username or 'жоқ'}"
+        )
+
+    text = (
+        "🚖 ШЫМБАЙ-НУКУС ТАКСИ 🚖\n\n"
+        "📍 БИЗДИҢ МАРШРУТЛАРЫМЫЗ\n\n"
+        "↗️ ШЫМБАЙДАН ➡️ НУКУСГЕ\n"
+        "↙️ НУКУСТЕН ⬅️ ШЫМБАЙҒА\n\n"
+        "🚖 Басқа қалаларға да хызмет көрсетемиз:\n"
+        "• ТЕК ҒАНА БУЙЫРТПА АРҚАЛЫ\n\n"
+        "📞 +998770149797\n📞 +998770149797\n\n"
+        "👨‍💻 АДМИН:@rakhim753\n\n"
+        "Төмендеги кнопкалардан өзиңизге кереклисин таңлаң! 😊"
     )
 
-# НОКИС ШЫМБАЙ кнопкасы
-@dp.message_handler(lambda message: message.text == "🚕 НОКИС ШЫМБАЙ")
-async def nokis_to_shimbay(message: types.Message):
-    await message.answer(
-        "Н О К И С Т Е Н\n\n"
-        "⤵️⤵️⤵️⤵️⤵️⤵️⤵️\n\n"
-        "ШЫМБАЙГА ЖУРЕМИЗ\n\n"
-        "АМАНАТ БОЛСА АЛЫП КЕТЕМИЗ\n\n"
-        "☎️ +998770149797\n"
-        "☎️ +998770149797"
+    buttons = [
+        [KeyboardButton(text="🚗 ШЫМБАЙ ➡️ НӨКІС")],
+        [KeyboardButton(text="🚕 НӨКІС ➡️ ШЫМБАЙ")]
+    ]
+    # 🔒 Тек админге арналған статистика кнопкасы
+    if message.from_user.id == ADMIN_ID:
+        buttons.append([KeyboardButton(text="📊 Статистика")])
+
+    markup = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+    await state.clear()
+    await message.answer(text, reply_markup=markup)
+
+@dp.message(F.text == "📊 Статистика")
+async def stats(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    total_users = len(users_set)
+    await message.answer(f"📊 Ботқа қосылған адамлар саны: {total_users} 👥")
+
+@dp.message(F.text == "🚗 ШЫМБАЙ ➡️ НӨКІС")
+@dp.message(F.text == "🚕 НӨКІС ➡️ ШЫМБАЙ")
+async def direction_chosen(message: types.Message, state: FSMContext):
+    direction = message.text
+    await state.update_data(direction=direction)
+
+    location_kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📍 МӘНЗИЛИМДИ ЖИБЕРИУ", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await state.set_state(OrderStates.waiting_for_location)
+    await message.answer("📍 МӘНЗИЛИҢИЗДИ ЖИБЕРИҢ:", reply_markup=location_kb)
+
+@dp.message(OrderStates.waiting_for_location, F.location)
+async def get_location(message: types.Message, state: FSMContext):
+    await state.update_data(location=message.location)
+
+    contact_kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📞 Нөмеримди жибериу", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await state.set_state(OrderStates.waiting_for_contact)
+    await message.answer("📞 Енді телефон нөміріңізді жіберің:", reply_markup=contact_kb)
+
+@dp.message(OrderStates.waiting_for_contact, F.contact)
+async def get_contact(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    location = data.get("location")
+    direction = data.get("direction", "Белгісіз")
+    contact = message.contact
+
+    text = (
+        "📥 ЖАҢА БУЙЫРТПА:\n\n"
+        f"🗺МӘНЗИЛ: {direction}\n"
+        f"👤 Аты: {message.from_user.full_name}\n"
+        f"🆔 ID: {message.from_user.id}\n"
+        f"📞 Тел: {contact.phone_number}\n"
+        f"📍 Локация: https://maps.google.com/?q={location.latitude},{location.longitude}\n"
+        f"👤 Username: @{message.from_user.username or 'жоқ'}"
     )
 
-# ШЫМБАЙ НОКИС кнопкасы
-@dp.message_handler(lambda message: message.text == "🚕 ШЫМБАЙ НОКИС")
-async def shimbay_to_nokis(message: types.Message):
+    await bot.send_message(ADMIN_ID, text)
     await message.answer(
-        "Ш Ы М Б А Й Д А Н\n\n"
-        "⤵️⤵️⤵️⤵️⤵️⤵️⤵️\n\n"
-        "НОКИСКЕ ЖУРЕМИЗ\n\n"
-        "АМАНАТ БОЛСА АЛЫП КЕТЕМИЗ\n\n"
-        "☎️ +998770149797\n"
-        "☎️ +998770149797"
+        "✅ Т БУЙЫРТПАҢЫЗ  ҚАБЫЛЛАНДЫn"
+        "🚖 ТЕЗ АРАДА БАЙЛАНЫСАМЫЗ",
+        reply_markup=ReplyKeyboardRemove()
     )
+    await state.clear()
 
-# Қалған хабарламалар
-@dp.message_handler()
-async def echo_message(message: types.Message):
-    await message.answer("Хабарыңыз қабылданды. Звонок етиң ☎️")
+# 🤖 Басқа хабарламалар
+@dp.message()
+async def fallback(message: types.Message):
+    await message.answer("🚖 БУЙРТПА БЕРИУ УШЫН /start ТЫ БАСЫҢ.")
 
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
